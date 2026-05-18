@@ -2,6 +2,7 @@ import logging
 import sys
 
 from app.router import classify_intent, route_to_workflow
+from app.schemas.intent import IntentType
 from app.schemas.ticket import TicketAnalysis
 
 logging.basicConfig(
@@ -42,7 +43,7 @@ def main() -> None:
     try:
         intent_result = classify_intent(user_input)
 
-        if intent_result.intent == "irrelevant":
+        if intent_result.intent == IntentType.IRRELEVANT:
             print(f"This input doesn't match any supported workflow.")
             print(f"  Reason: {intent_result.reasoning}")
             print(f"\nSupported workflows: ticket analysis")
