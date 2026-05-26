@@ -19,6 +19,9 @@ build/
 # Claude Code
 .claude/
 
+# Test/workspace files
+notes/
+
 # OS
 .DS_Store
 Thumbs.db
