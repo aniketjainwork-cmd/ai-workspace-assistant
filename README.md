@@ -1,28 +1,41 @@
 # AI Workspace Assistant
 
-A CLI-based AI assistant that uses structured JSON outputs with Pydantic validation. Designed as a foundation for building RAG pipelines, tool-use agents, and LangGraph workflows.
+A CLI-based AI workspace assistant with intent routing, tool orchestration, and structured outputs. Built from fundamentals (no frameworks) as a foundation for RAG, agents, and LangGraph workflows.
 
 ## Architecture
 
 ```
 ai_workspace_assistant/
 ├── app/
-│   ├── llm/          # Reusable OpenAI-compatible client wrapper
-│   ├── prompts/      # System prompt templates
-│   ├── schemas/      # Pydantic models for structured outputs
-│   ├── workflows/    # Orchestration logic (LLM call → parse → validate → retry)
-│   └── utils/        # Parsing helpers (e.g., strip markdown fences)
-├── main.py           # CLI entry point
+│   ├── llm/                    # Reusable OpenAI-compatible client wrapper
+│   ├── prompts/                # All system prompt templates (centralized)
+│   ├── router/                 # Intent classification + workflow routing
+│   ├── schemas/                # All Pydantic models (centralized)
+│   ├── tools/
+│   │   ├── implementations/    # Tool functions (file_reader, file_writer, etc.)
+│   │   ├── executor.py         # execute_tool() — validates, executes, returns ToolResult
+│   │   └── registry.py         # TOOL_REGISTRY — maps tool names to ToolDefinitions
+│   ├── utils/                  # Retry logic, parsing, response synthesis
+│   └── workflows/              # Orchestration (chains tools into sequences)
+├── main.py                     # CLI entry point
+├── ROADMAP.md                  # Deferred architectural decisions
 ├── requirements.txt
-├── .env.example
-└── README.md
+└── .env.example
 ```
 
 **Key design decisions:**
 - **No frameworks** — raw OpenAI SDK + Pydantic only, keeping the code transparent and educational.
-- **Provider-agnostic** — swap between Groq, OpenAI, or any OpenAI-compatible API by changing environment variables.
-- **Structured outputs** — the LLM is prompted to return raw JSON; the response is parsed and validated against a Pydantic schema.
-- **Retry logic** — if the LLM returns malformed JSON or validation fails, the workflow retries up to 3 times before raising.
+- **Provider-agnostic** — swap between Groq, OpenAI, or any OpenAI-compatible API via environment variables.
+- **Intent routing** — LLM classifies user input into typed intents (enum), router dispatches to the correct workflow.
+- **Tool orchestration** — workflows chain tools in hardcoded sequences via a centralized executor with typed inputs/outputs.
+- **Structured outputs** — LLMs return raw JSON, validated by Pydantic schemas with retry logic.
+- **Response synthesis** — raw workflow results are passed through a final LLM call for natural language output.
+
+## Flow
+
+```
+User Input → Intent Classifier → Router → Workflow → Tools (via executor) → Synthesis → Response
+```
 
 ## Setup
 
@@ -46,6 +59,28 @@ cp .env.example .env
 | `LLM_API_KEY` | API key for your LLM provider | `gsk_abc123...` |
 | `LLM_BASE_URL` | Base URL for the OpenAI-compatible API | `https://api.groq.com/openai/v1` |
 | `LLM_MODEL` | Model identifier | `llama-3.3-70b-versatile` |
+| `WORKSPACE_ROOT` | Root directory for file tools | `.` |
+
+## Supported Workflows
+
+| Intent | Trigger examples | What it does |
+|--------|-----------------|--------------|
+| `ticket_analysis` | Support tickets, complaints, bug reports | Extracts sentiment, priority, summary, action items |
+| `file_analysis` | "analyze README.md", "summarize the roadmap" | Reads file (with search fallback), summarizes, extracts tasks |
+| `file_write` | "create notes/ideas.md with...", "add X to file.md" | Writes/appends content to files |
+| `list_workspace` | "show my files", "what's in my workspace" | Lists recent workspace files with timestamps |
+
+## Tools
+
+| Tool | Type | Description |
+|------|------|-------------|
+| `file_reader` | System | Read files safely (path traversal protection, extension allowlist) |
+| `file_writer` | System | Write/append files (overwrite protection, auto-mkdir) |
+| `file_find` | System | Find files by name across workspace |
+| `list_files` | System | List recent workspace files with timestamps |
+| `workspace_search` | System | Keyword search across file contents |
+| `note_summarizer` | LLM-powered | Summarize documents into title + key points |
+| `task_extractor` | LLM-powered | Extract action items with priority + assignee |
 
 ## Usage
 
@@ -53,44 +88,55 @@ cp .env.example .env
 python main.py
 ```
 
-Then paste a support ticket and press `Ctrl+D` (macOS/Linux) or `Ctrl+Z` (Windows) to submit.
+Paste your input and press `Ctrl+D` (macOS/Linux) or `Ctrl+Z` (Windows).
 
-### Example
+### Examples
 
-**Input:**
+```bash
+# Analyze a file
+echo "summarize the roadmap" | python main.py
+
+# Write a file
+echo "create notes/todo.md with: finish the API integration" | python main.py
+
+# Append to a file
+echo "add 'write tests' to notes/todo.md" | python main.py
+
+# List workspace files
+echo "show me my files" | python main.py
+
+# Support ticket analysis
+echo "Payment gateway returning 500 errors for 2 hours. Customers can't checkout." | python main.py
+
+# Irrelevant input (rejected)
+echo "hey whats up" | python main.py
 ```
-I've been trying to reset my password for 3 days now and your system keeps
-sending me expired links. This is incredibly frustrating. I have a demo with
-a client tomorrow and I can't even access my account. Please fix this ASAP.
-```
 
-**Output:**
-```
-Analysis Result:
-----------------------------------------
-  Sentiment:    negative
-  Priority:     high
-  Summary:      Customer unable to reset password due to expired reset links, with urgent deadline.
-  Action Items:
-    - Investigate password reset link expiration logic
-    - Manually reset the customer's password or provide alternative access
-    - Escalate to engineering if link expiration is a systemic bug
-```
+## How It Works
 
-## How Structured Outputs Work
+1. **Intent classification** — LLM classifies input into a typed `IntentType` enum with confidence scoring. Low confidence defaults to "irrelevant".
+2. **Routing** — `WORKFLOW_REGISTRY` maps intent → workflow function.
+3. **Workflow execution** — Workflow chains tools via `execute_tool()`, building a typed `WorkflowContext` with `WorkflowStep` results.
+4. **Tool execution** — `execute_tool()` validates input against Pydantic schemas, runs the tool function, returns `ToolResult`.
+5. **Response synthesis** — Final LLM call converts raw workflow output into a natural language response.
 
-1. **Prompt engineering** — the system prompt explicitly defines the JSON schema and instructs the LLM to return only raw JSON (no markdown fences, no explanation).
-2. **Response cleaning** — `strip_json_fences()` removes any accidental markdown code fences the LLM might add.
-3. **JSON parsing** — `json.loads()` converts the string to a Python dict.
-4. **Pydantic validation** — the dict is passed to `TicketAnalysis(**data)`, which validates types and required fields.
-5. **Retry loop** — if any step (2-4) fails, the entire LLM call is retried up to 3 times.
+## Adding a New Tool
 
-This pattern gives you type-safe, validated outputs from any LLM without relying on provider-specific "JSON mode" features.
+1. Create `app/tools/implementations/my_tool.py`
+2. Add input schema to `app/schemas/tools.py`
+3. Export from `app/tools/implementations/__init__.py`
+4. Register in `app/tools/registry.py`
+
+## Adding a New Workflow
+
+1. Add intent to `IntentType` enum in `app/schemas/intent.py`
+2. Add intent description to `app/prompts/intent_classification.py`
+3. Create workflow in `app/workflows/`
+4. Register in `app/router/registry.py`
 
 ## Next Steps
 
-This project is designed to scale into:
-- **RAG** — add vector search to inject relevant context into prompts
-- **Tool use** — let the LLM call functions (file search, web lookup, database queries)
-- **Agents** — multi-step reasoning with tool selection
+See [ROADMAP.md](ROADMAP.md) for deferred architectural decisions. This project is designed to evolve into:
+- **RAG** — vector search to inject relevant context into prompts
+- **Agentic tool selection** — LLM decides which tools to call (replaces hardcoded sequences)
 - **LangGraph workflows** — stateful, graph-based orchestration with branching and cycles
